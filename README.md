@@ -42,10 +42,8 @@ You need **SVM Mode switched on in the BIOS**. Nothing has to be compiled: no Xc
    ```
    Restart from that EFI.
 4. Check everything: `./rhv doctor`. It says what to fix.
-5. Make `kern.hv_support` turn on by itself at every start (Parallels needs it; it is 0 after each restart):
-   ```bash
-   ./rhv autostart install
-   ```
+5. Verify `sysctl kern.hv_support` prints `1`. The native installer adds `rhv_hv_sysctl=1`, so the driver enables it during boot.
+   After verifying the new boot, an existing legacy boot service can be removed with `./rhv autostart remove`.
 6. Then whatever you use:
    - **Docker Desktop:** `./rhv docker-desktop get` (downloads exactly version 4.97.0 from docker.com; skip it if you have that build), quit Docker if it runs, then
      `./rhv docker-desktop`, then start Docker as usual.
@@ -92,13 +90,13 @@ There is also a small app, **RyzenHV**, with buttons for the same steps (kext, a
 - Only the **Intel build 4.97.0** is supported; `./rhv docker-desktop get` installs it. Turn off automatic updates in Docker's settings; after an update run
   `./rhv docker-desktop` again.
 - Quit Docker Desktop before running `./rhv docker-desktop`. The step also switches Docker to its HyperKit engine (not "Virtualization framework"); that is on purpose.
-- If Docker does not start after a restart of the Mac, delete the leftover file `~/Library/Containers/com.docker.docker/Data/vms/0/hyperkit.pid` and start it again.
+- The HyperKit compatibility hook recovers stale PID files and holds a lifetime lock while a VM runs.
 
 ### For every VM
 
 - Shut the VMs down before you restart the Mac. Sleep and wake of the Mac with a running VM has not been tested.
 - One VM program at a time is the safest. Docker next to a running Parallels VM worked in short tests.
-- If a VM does not start, first check `sysctl kern.hv_support`: it must print **1**. If it prints 0, run `./rhv autostart install` (once) or `./bin/rhv-info hv sysctl 1`.
+- If a VM does not start, first check `sysctl kern.hv_support`: it must print **1**. If it prints 0, check that `rhv_hv=1` and `rhv_hv_sysctl=1` are present in the active boot arguments. `./bin/rhv-info hv sysctl 1` enables it for the current boot.
 
 ## If something goes wrong
 

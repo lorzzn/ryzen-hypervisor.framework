@@ -7,11 +7,21 @@
 # <qemu-dir> is a directory with the already built, relocatable QEMU (bin/qemu-system-x86_64, lib/*.dylib, share/qemu/*),
 # made by release/bundle-qemu.sh. Everything else is built here from the sources, so the kext, the shim and the
 # stand-in library of one bundle always come from one build (the ABI numbers match).
+# Parallels' original library is represented by a link-time stub and supplied by the installed app at runtime.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 VER="${1:?usage: package.sh <version> <qemu-dir>}"
 QEMU_DIR="${2:?usage: package.sh <version> <qemu-dir>}"
 cd "$HERE"
+[[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]] || {
+    echo "invalid release version: $VER" >&2
+    exit 2
+}
+SHORT_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - kext/Info.plist)"
+[ "${VER%%-*}" = "$SHORT_VERSION" ] || {
+    echo "release version $VER does not match kext version $SHORT_VERSION" >&2
+    exit 2
+}
 
 ABI="$(sed -n 's/^#define RHV_ABI_VERSION[[:space:]]*\([0-9]*\).*/\1/p' include/RyzenHVShared.h)"
 [ -n "$ABI" ] || { echo "cannot read RHV_ABI_VERSION" >&2; exit 1; }
@@ -19,15 +29,9 @@ ABI="$(sed -n 's/^#define RHV_ABI_VERSION[[:space:]]*\([0-9]*\).*/\1/p' include/
 make -C kext clean >/dev/null
 rm -f build/libryzenhv.dylib build/libPrlXmlModel.1.dylib
 make kext shim tools >/dev/null
-if [ ! -f build/hijack-link/libPrlXmlModel.1.dylib ]; then
-    APP="/Applications/Parallels Desktop.app"
-    mkdir -p build/hijack-link
-    cp "$APP/Contents/Frameworks/libPrlXmlModel.1.dylib" build/hijack-link/libPrlXmlModel.1.dylib
-    install_name_tool -id "@loader_path/libPrlXmlModel.1.orig.dylib" build/hijack-link/libPrlXmlModel.1.dylib
-fi
-make hijack >/dev/null
+make hijack HIJACK_ORIG="$HERE/release/libPrlXmlModel.1.tbd" >/dev/null
 cp build/libPrlXmlModel.1.dylib build/prl-shim.dylib
-make hijack-patchonly >/dev/null                     # the native-mode variant: only patches Parallels' vendor check
+make hijack-patchonly HIJACK_ORIG="$HERE/release/libPrlXmlModel.1.tbd" >/dev/null
 cp build/libPrlXmlModel.1.dylib build/prl-native.dylib
 
 S="dist/ryzenhv-$VER"
@@ -47,7 +51,9 @@ cp docs/PARALLELS.md docs/DOCKER.md docs/DOCKER-DESKTOP.md docs/NATIVE.md docs/R
 cp release/README-BUNDLE.md "$S/START-HERE.md"
 cp release/LICENSES/* "$S/LICENSES/"
 cp LICENSE "$S/LICENSES/RyzenHV-LICENSE" 2>/dev/null || true
-printf 'version=%s\nabi=%s\nparallels_build=57613\nbuilt=%s\n' "$VER" "$ABI" "$(date +%s)" > "$S/VERSION"
+printf 'version=%s\nabi=%s\nparallels_build=57613\nbuilt=%s\nsource=%s\nci_run=%s\nqemu_source=%s\nqemu_sha256=%s\n' \
+    "$VER" "$ABI" "$(date +%s)" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+    "${GITHUB_RUN_ID:-local}" "${QEMU_SOURCE:-local}" "${QEMU_SHA256:-unknown}" > "$S/VERSION"
 find "$S" -name '.DS_Store' -delete
 find "$S" -name '*.dSYM' -prune -exec rm -rf {} \;
 

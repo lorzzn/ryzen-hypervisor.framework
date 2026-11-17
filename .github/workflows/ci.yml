@@ -1,0 +1,88 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      QEMU_ARCHIVE: ryzenhv-0.7.9-macos-x86_64.tar.gz
+      QEMU_SOURCE: https://github.com/OverlordDev/ryzen-hypervisor.framework/releases/tag/v0.7.9-beta
+      QEMU_SHA256: dfe7eca98f3229f062f2973a3f9717012665914e108ecba91f54cd82656b23d2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate release version
+        shell: bash
+        run: |
+          version="$(cat release/VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-compat\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" = tag ]]; then
+            [[ "$GITHUB_REF_NAME" = "v$version" ]]
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Run host and compatibility tests
+        run: make test
+      - name: Test release linking and native installation
+        run: python3 -m unittest discover -s tests -p test_release_build.py -v
+      - name: Fetch verified QEMU dependency
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          dependency="$RUNNER_TEMP/upstream"
+          mkdir -p "$dependency"
+          gh release download v0.7.9-beta \
+            --repo OverlordDev/ryzen-hypervisor.framework \
+            --pattern "$QEMU_ARCHIVE" --dir "$dependency"
+          printf '%s  %s\n' "$QEMU_SHA256" "$dependency/$QEMU_ARCHIVE" | shasum -a 256 -c -
+          tar -xzf "$dependency/$QEMU_ARCHIVE" -C "$dependency" ryzenhv-0.7.9/qemu
+          "$dependency/ryzenhv-0.7.9/qemu/bin/qemu-system-x86_64" --version
+      - name: Build complete release from source
+        run: bash release/package.sh "$VERSION" "$RUNNER_TEMP/upstream/ryzenhv-0.7.9/qemu"
+      - name: Verify package identity and layout
+        run: |
+          python3 release/check-package.py "dist/ryzenhv-$VERSION-macos-x86_64.tar.gz" \
+            --version "$VERSION" --source "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ryzenhv-macos-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ryzenhv-macos-x86_64
+          path: dist
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 release/publish.py

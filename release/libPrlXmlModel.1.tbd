@@ -1,0 +1,7 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos ]
+install-name: '@loader_path/libPrlXmlModel.1.orig.dylib'
+current-version: 1
+compatibility-version: 1
+...

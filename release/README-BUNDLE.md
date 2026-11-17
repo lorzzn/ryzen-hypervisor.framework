@@ -18,7 +18,7 @@ xattr -dr com.apple.quarantine .      # if the archive was downloaded with a bro
    and appends the boot-args `rhv_enable_svm=1 rhv_allow_users=1 amfi_get_out_of_my_way=0x1`. Reboot from that EFI.
    SVM Mode must be enabled in the BIOS.
 2. **`./rhv doctor`** checks that everything is in place: CPU, boot-args, the kext (its ABI must match this build), QEMU, Parallels.
-   **Native mode (new in 0.7, experimental):** `./rhv kext --native` also adds `rhv_hv=1`. Then the kext itself is the hypervisor provider and
+   **Native mode (new in 0.7, experimental):** `./rhv kext --native` also adds `rhv_hv=1 rhv_hv_sysctl=1`. The driver enables virtualization support during boot. Then the kext itself is the hypervisor provider and
    `./rhv docker-desktop` leaves Docker's own files alone (no shim, no wrappers). Read `docs/NATIVE.md` first: it lists what is tested and what is not.
 3. Then whatever you need:
    - **Docker Desktop (the real one):** `./rhv docker-desktop get` (downloads Docker Desktop 4.97.0 from docker.com and installs it;
@@ -29,8 +29,8 @@ xattr -dr com.apple.quarantine .      # if the archive was downloaded with a bro
      To reach a container port from the Mac: `./rhv docker up --port 8080`, then `docker run -p 8080:80 nginx` and `http://127.0.0.1:8080`. Stop it with `./rhv docker down`.
      The first start downloads about 150 MB (the Alpine kernel, packages, the docker CLI) and takes a few minutes.
    - **Parallels Desktop 26.5.0:** `./rhv parallels`, then the VM settings it prints. To undo: `./rhv parallels undo`.
-     With the kext in native mode (`./rhv kext --native`) there is also `./rhv parallels native` (experimental, see `docs/NATIVE.md`) and
-     `./rhv autostart install`, which turns `kern.hv_support` on at every boot (it is 0 after each restart and Parallels needs it); `./rhv autostart remove` undoes it.
+     With the kext in native mode (`./rhv kext --native`) there is also `./rhv parallels native` (experimental, see `docs/NATIVE.md`).
+     After verifying that `sysctl kern.hv_support` returns `1` following a reboot, use `./rhv autostart remove` to remove an existing legacy boot service.
 
 ## What is inside
 

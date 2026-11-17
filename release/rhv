@@ -133,7 +133,7 @@ kext_install() {
     local efi="" a
     for a in "$@"; do
         case "$a" in
-        --native) BOOTARGS_WANTED="$BOOTARGS_WANTED rhv_hv=1" ;;
+        --native) BOOTARGS_WANTED="$BOOTARGS_WANTED rhv_hv=1 rhv_hv_sysctl=1" ;;
         *) efi="$a" ;;
         esac
     done
