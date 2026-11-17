@@ -73,6 +73,26 @@ class HyperKitCompatTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.pid.read_text(), original)
 
+    def test_existing_live_vm_path_alias_is_preserved(self):
+        original = str(os.getpid())
+        self.pid.write_text(original)
+        result = self.run_pid(
+            RHV_TEST_ACTIVE_PID=original,
+            RHV_TEST_ACTIVE_PATH=str(self.vm / ".." / "0" / "hyperkit.pid"),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.pid.read_text(), original)
+
+    def test_existing_live_vm_with_attached_pid_option_is_preserved(self):
+        original = str(os.getpid())
+        self.pid.write_text(original)
+        result = self.run_pid(
+            RHV_TEST_ACTIVE_PID=original, RHV_TEST_ACTIVE_PATH=str(self.pid),
+            RHV_TEST_ATTACHED_F="1",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.pid.read_text(), original)
+
     def test_other_live_vm_does_not_block_stale_pid_recovery(self):
         original = str(os.getpid())
         self.pid.write_text(original)

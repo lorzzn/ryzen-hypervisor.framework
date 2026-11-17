@@ -143,8 +143,23 @@ static void copy_bytes(void *destination, const void *source, size_t size)
     for (size_t i = 0; i < size; i++) out[i] = in[i];
 }
 
+static int same_pidfile(const struct Api *api, const char *argument,
+                        const char *pidfile, int file)
+{
+    if (equal(argument, pidfile)) return 1;
+    int candidate = api->open(argument, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (candidate < 0)
+        return *api->error() == ENOENT || *api->error() == ENOTDIR ? 0 : -1;
+    struct stat current, other;
+    int result = -1;
+    if (!api->fstat(file, &current) && !api->fstat(candidate, &other))
+        result = current.st_dev == other.st_dev && current.st_ino == other.st_ino;
+    api->close(candidate);
+    return result;
+}
+
 /* -1 means the owner cannot be determined, so the file must be preserved. */
-static int owns_vm(const struct Api *api, pid_t pid, const char *pidfile)
+static int owns_vm(const struct Api *api, pid_t pid, const char *pidfile, int file)
 {
     if (pid == api->getpid()) return 0;
     int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
@@ -168,16 +183,23 @@ static int owns_vm(const struct Api *api, pid_t pid, const char *pidfile)
     size_t at = sizeof(argc);
     while (at < size && arguments[at]) at++;
     while (at < size && !arguments[at]) at++;
-    int next_is_path = 0;
+    int next_is_path = 0, found_path = 0;
     for (int i = 0; i < argc && at < size; i++) {
         const char *arg = arguments + at;
         size_t length = text_length(arg, size - at);
         if (length == size - at) return -1;
-        if (next_is_path && equal(arg, pidfile)) return 1;
+        const char *owner_path = NULL;
+        if (next_is_path) owner_path = arg;
+        else if (length > 2 && arg[0] == '-' && arg[1] == 'F') owner_path = arg + 2;
+        if (owner_path) {
+            found_path = 1;
+            int same = same_pidfile(api, owner_path, pidfile, file);
+            if (same) return same;
+        }
         next_is_path = equal(arg, "-F");
         at += length + 1;
     }
-    return 0;
+    return found_path && !next_is_path ? 0 : -1;
 }
 
 static pid_t read_pid(const char *bytes, size_t size)
@@ -242,7 +264,7 @@ int rhv_compat_open(const char *path, int flags, ...)
     ssize_t count = api.read(file, previous, sizeof(previous));
     if (count < 0) { error = *api.error(); goto failed; }
     pid_t pid = read_pid(previous, (size_t)count);
-    if (pid && owns_vm(&api, pid, path) != 0) { error = EBUSY; goto failed; }
+    if (pid && owns_vm(&api, pid, path, file) != 0) { error = EBUSY; goto failed; }
     if (api.truncate(file, 0) || api.seek(file, 0, SEEK_SET) < 0) {
         error = *api.error();
         goto failed;
