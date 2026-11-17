@@ -14,6 +14,14 @@
 #define rhv_compat_connect connect
 #else
 #include "../compat/HyperKitCompat.h"
+#ifdef RHV_MAPPED_PAYLOAD
+#include "../build/HyperKitPayload.h"
+#include <sys/mman.h>
+static int (*mapped_open)(const char *, int, ...);
+static int (*mapped_connect)(int, const struct sockaddr *, socklen_t);
+#define rhv_compat_open mapped_open
+#define rhv_compat_connect mapped_connect
+#endif
 
 /* A live HyperKit with a selected VM, without starting another real VM. */
 static int test_sysctl(int *mib, unsigned count, void *out, size_t *size,
@@ -55,6 +63,8 @@ static int test_sysctl(int *mib, unsigned count, void *out, size_t *size,
 
 static void *lookup(void *handle, const char *name)
 {
+    const char *missing = getenv("RHV_TEST_MISSING_SYMBOL");
+    if (missing && !strcmp(missing, name)) return NULL;
     if (!strcmp(name, "sysctl")) return (void *)test_sysctl;
     return dlsym(handle, name);
 }
@@ -63,6 +73,9 @@ static void *lookup(void *handle, const char *name)
 static int connect_file(const char *path)
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int nonblocking = getenv("RHV_TEST_NONBLOCK") != NULL;
+    if (nonblocking && (fcntl(fd, F_SETFL, O_NONBLOCK) ||
+                        fcntl(fd, F_SETFD, FD_CLOEXEC))) return 14;
     struct sockaddr_un address = {0};
     address.sun_family = AF_UNIX;
     if (strlen(path) >= sizeof(address.sun_path)) return 10;
@@ -71,6 +84,13 @@ static int connect_file(const char *path)
         printf("ERR %d\n", errno);
         close(fd);
         return 2;
+    }
+    if (nonblocking) {
+        if (!(fcntl(fd, F_GETFL) & O_NONBLOCK) || !(fcntl(fd, F_GETFD) & FD_CLOEXEC)) {
+            close(fd);
+            return 15;
+        }
+        if (fcntl(fd, F_SETFL, 0)) return 16;
     }
     struct timeval timeout = {.tv_sec = 2};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -88,8 +108,23 @@ static int connect_file(const char *path)
 int main(int argc, char **argv)
 {
 #ifndef RHV_BASELINE
-    rhv_compat_config.lookup = (uintptr_t)lookup;
-    rhv_compat_config.pid_lock_fd = -1;
+    struct RhvCompatConfig *configuration;
+#ifdef RHV_MAPPED_PAYLOAD
+    unsigned char *mapped = mmap(NULL, rhv_payload_size, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (mapped == MAP_FAILED) return 11;
+    memcpy(mapped, rhv_payload_bytes, rhv_payload_size);
+    configuration = (void *)(mapped + rhv_payload_config_offset);
+    mapped_open = (void *)(mapped + rhv_payload_open_offset);
+    mapped_connect = (void *)(mapped + rhv_payload_connect_offset);
+    if (mprotect(mapped, rhv_payload_text_size, PROT_READ | PROT_EXEC)) return 12;
+#else
+    configuration = &rhv_compat_config;
+#endif
+    if (configuration->magic != RHV_COMPAT_MAGIC || configuration->abi != RHV_COMPAT_ABI)
+        return 13;
+    configuration->lookup = (uintptr_t)lookup;
+    configuration->pid_lock_fd = -1;
 #endif
     if (argc < 3) return 10;
     if (!strcmp(argv[1], "connect")) return connect_file(argv[2]);

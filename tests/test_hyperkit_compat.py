@@ -5,6 +5,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -109,7 +110,12 @@ class HyperKitCompatTests(unittest.TestCase):
         self.assertNotEqual(self.run_pid().returncode, 0)
         self.assertEqual(target.read_text(), "untouched")
 
-    def start_server(self, acknowledge=b"\xfd", *, ordinary=False):
+    def test_missing_pid_api_fails_without_crashing(self):
+        result = self.run_pid(RHV_TEST_MISSING_SYMBOL="flock")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertFalse(self.pid.exists())
+
+    def start_server(self, acknowledge=b"\xfd", *, ordinary=False, silent=False):
         path = self.root / ("normal.sock" if ordinary else "filesystem-fd.sock")
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(str(path))
@@ -134,6 +140,9 @@ class HyperKitCompatTests(unittest.TestCase):
                     descriptors = array.array("i")
                     descriptors.frombytes(data[:descriptors.itemsize])
                     with socket.socket(fileno=descriptors[0]) as stream:
+                        if silent:
+                            time.sleep(3.5)
+                            return
                         if acknowledge:
                             connection.sendall(acknowledge)
                         if acknowledge == b"\xfd":
@@ -152,15 +161,21 @@ class HyperKitCompatTests(unittest.TestCase):
         self.server_threads.append(thread)
         return path
 
-    def connect(self, path):
+    def connect(self, path, **environment):
         return subprocess.run(
             [str(RUNNER), "connect", str(path)],
+            env=dict(os.environ, **environment),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6,
         )
 
     def test_fileserver_handoff(self):
         self.start_server()
         result = self.connect(self.vm / "00000002.00001003")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_fileserver_handoff_preserves_nonblocking_and_close_on_exec(self):
+        self.start_server()
+        result = self.connect(self.vm / "00000002.00001003", RHV_TEST_NONBLOCK="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_unrelated_socket_is_unchanged(self):
@@ -175,6 +190,15 @@ class HyperKitCompatTests(unittest.TestCase):
     def test_absent_acknowledgement_is_rejected(self):
         self.start_server(acknowledge=b"")
         self.assertNotEqual(self.connect(self.vm / "00000002.00001003").returncode, 0)
+
+    def test_silent_fileserver_obeys_deadline(self):
+        self.start_server(silent=True)
+        started = time.monotonic()
+        result = self.connect(self.vm / "00000002.00001003")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 2)
+        self.assertGreaterEqual(elapsed, 2.7)
+        self.assertLess(elapsed, 4.5)
 
 
 if __name__ == "__main__":

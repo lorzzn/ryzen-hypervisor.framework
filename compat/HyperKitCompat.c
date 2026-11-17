@@ -22,6 +22,24 @@ struct RhvCompatConfig rhv_compat_config = {
     RHV_COMPAT_MAGIC, RHV_COMPAT_ABI, 0, -1, 0, 0
 };
 
+#ifdef RHV_EMBEDDED
+/* Clang can lower aggregate initialization to these even in freestanding mode. */
+void *memset(void *pointer, int value, size_t size)
+{
+    volatile unsigned char *out = pointer;
+    for (size_t i = 0; i < size; i++) out[i] = (unsigned char)value;
+    return pointer;
+}
+
+void *memcpy(void *destination, const void *source, size_t size)
+{
+    volatile unsigned char *out = destination;
+    const unsigned char *in = source;
+    for (size_t i = 0; i < size; i++) out[i] = in[i];
+    return destination;
+}
+#endif
+
 typedef int (*OpenFunction)(const char *, int, ...);
 typedef int (*ConnectFunction)(int, const struct sockaddr *, socklen_t);
 
@@ -58,7 +76,7 @@ static void *symbol(const char *name)
 static int fail(int error)
 {
     int *(*get_error)(void) = symbol("__error");
-    *get_error() = error;
+    if (get_error) *get_error() = error;
     return -1;
 }
 
@@ -87,6 +105,15 @@ static struct Api load_api(void)
     api.clock_gettime = symbol("clock_gettime");
     api.error = symbol("__error");
     return api;
+}
+
+static int api_ready(const struct Api *api)
+{
+    return api->open && api->connect && api->close && api->flock && api->fstat &&
+           api->read && api->truncate && api->seek && api->sysctl && api->getpid &&
+           api->geteuid && api->socket && api->socketpair && api->fcntl && api->poll &&
+           api->getsockopt && api->sendmsg && api->recv && api->dup2 &&
+           api->clock_gettime && api->error;
 }
 
 static size_t text_length(const char *text, size_t limit)
@@ -184,13 +211,15 @@ int rhv_compat_open(const char *path, int flags, ...)
         va_end(arguments);
     }
     OpenFunction original = symbol("open");
+    if (!original) return fail(ENOSYS);
     const int pid_flags = O_CREAT | O_EXCL | O_WRONLY;
     if (!path || (flags & (O_CREAT | O_EXCL | O_ACCMODE)) != pid_flags ||
         !ends_with(path, "/hyperkit.pid")) return original(path, flags, mode);
 
+    struct Api api = load_api();
+    if (!api_ready(&api)) return fail(ENOSYS);
     if (!__sync_bool_compare_and_swap(&rhv_compat_config.pid_lock_fd, -1, -2))
         return fail(EBUSY);
-    struct Api api = load_api();
     int lock = -1, file = -1, error = EINVAL;
     char lock_path[PATH_MAX];
     size_t length = text_length(path, sizeof(lock_path));
@@ -280,22 +309,27 @@ static int fileserver_path(const struct sockaddr *address, socklen_t length,
 int rhv_compat_connect(int fd, const struct sockaddr *address, socklen_t length)
 {
     ConnectFunction original = symbol("connect");
+    if (!original) return fail(ENOSYS);
     int result = original(fd, address, length);
     if (!result) return 0;
     int *(*get_error)(void) = symbol("__error");
+    if (!get_error) return -1;
     int original_error = *get_error();
     struct sockaddr_un service = {0};
     if ((original_error != ENOENT && original_error != ECONNREFUSED) ||
         !fileserver_path(address, length, &service)) return fail(original_error);
 
     struct Api api = load_api();
+    if (!api_ready(&api)) return fail(original_error);
     int pair[2] = {-1, -1}, control = -1, error = EIO;
     int descriptor_flags = api.fcntl(fd, F_GETFD);
-    if (descriptor_flags < 0) return -1;
+    int status_flags = api.fcntl(fd, F_GETFL);
+    if (descriptor_flags < 0 || status_flags < 0) return -1;
     int64_t now = milliseconds(&api);
     if (now < 0) return fail(EIO);
     int64_t deadline = now + 3000;
     if (api.socketpair(AF_UNIX, SOCK_STREAM, 0, pair)) return -1;
+    if (api.fcntl(pair[0], F_SETFL, status_flags)) { error = *api.error(); goto failed; }
     control = api.socket(AF_UNIX, SOCK_STREAM, 0);
     if (control < 0) { error = *api.error(); goto failed; }
     if (api.fcntl(control, F_SETFL, O_NONBLOCK)) { error = *api.error(); goto failed; }
