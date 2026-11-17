@@ -11,14 +11,14 @@ BUILD := build
 CC    ?= cc
 CXX   ?= c++
 
-.PHONY: all test tools shim hijack hijack-patchonly kext clean
+.PHONY: all test test-compat tools shim hijack hijack-patchonly kext clean
 
 all: tools shim kext
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
-test: | $(BUILD)
+test: test-compat | $(BUILD)
 	$(CC) -Wall -Wextra -Werror -o $(BUILD)/host_test tests/host_test.c
 	$(BUILD)/host_test
 	$(CXX) -std=c++17 -Wall -Wextra -Werror -o $(BUILD)/vmcb_layout tests/vmcb_layout.cpp
@@ -37,6 +37,26 @@ test: | $(BUILD)
 	$(BUILD)/patch_test
 	$(CC) -arch x86_64 -Wall -Wextra -Werror -Wno-nullability-completeness -fsanitize=address,undefined -g -o $(BUILD)/shim_core_test tests/shim_core_test.c shim/rhv_core.c -framework Hypervisor
 	$(BUILD)/shim_core_test
+
+$(BUILD)/HyperKitPayload.h: compat/HyperKitCompat.c compat/HyperKitCompat.h scripts/build-hyperkit-payload.py | $(BUILD)
+	python3 scripts/build-hyperkit-payload.py
+
+test-compat: $(BUILD)/HyperKitPayload.h | $(BUILD)
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -o $(BUILD)/client_image_test tests/client_image_test.cpp
+	$(BUILD)/client_image_test
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g -o $(BUILD)/client_install_test tests/client_install_test.cpp
+	$(BUILD)/client_install_test
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -o $(BUILD)/client_image_live_test tests/client_image_live_test.cpp
+	$(BUILD)/client_image_live_test
+	@if test -f /Applications/Docker.app/Contents/Resources/bin/com.docker.hyperkit; then \
+		$(BUILD)/client_image_live_test /Applications/Docker.app/Contents/Resources/bin/com.docker.hyperkit; \
+	fi
+	$(CXX) -std=c++17 -Wall -Wextra -Werror -o $(BUILD)/client_install_live_test tests/client_install_live_test.cpp
+	$(BUILD)/client_install_live_test
+	$(CC) -Wall -Wextra -Werror -O2 -o $(BUILD)/hyperkit_compat_test tests/hyperkit_compat_test.c compat/HyperKitCompat.c
+	python3 -m unittest discover -s tests -p test_hyperkit_compat.py -v
+	$(CC) -Wall -Wextra -Werror -O2 -DRHV_MAPPED_PAYLOAD -o $(BUILD)/hyperkit_compat_mapped_test tests/hyperkit_compat_test.c
+	RHV_COMPAT_RUNNER="$(CURDIR)/$(BUILD)/hyperkit_compat_mapped_test" python3 -m unittest discover -s tests -p test_hyperkit_compat.py -v
 
 tools: | $(BUILD)
 	$(CC) -arch x86_64 -Wall -Wextra -O2 -o $(BUILD)/rhv-info tools/rhv-info/main.c \
@@ -80,7 +100,7 @@ hijack-patchonly: | $(BUILD)
 		-install_name @rpath/$(HIJACK_NAME) -Wl,-reexport_library,$(HIJACK_ORIG) \
 		-o $(BUILD)/$(HIJACK_NAME) shim/hijack_patchonly.c shim/rhv_patch.c
 
-kext:
+kext: $(BUILD)/HyperKitPayload.h
 	$(MAKE) -C kext
 
 clean:

@@ -9,7 +9,9 @@
 #include <string.h>
 
 #include "HvPatch.hpp"
+#include "HvCompat.hpp"
 #include "Log.hpp"
+#include "../../include/rhv_client_image.hpp"
 
 extern "C" vm_map_t get_task_map(task_t);
 extern "C" proc_t current_proc(void);
@@ -190,6 +192,8 @@ void fixCurrentClient()
     /* Every executable region of the process below the shared cache: the main executable and the libraries loaded next to it. */
     mach_vm_size_t scanned = 0;
     unsigned regions = 0;
+    mach_vm_address_t mainImage = 0;
+    unsigned mainImages = 0;
     mach_vm_address_t addr = kScanFrom;
     while (regions++ < kMaxRegions) {
         mach_vm_size_t size = 0;
@@ -201,6 +205,12 @@ void fixCurrentClient()
         if (addr >= kScanBelow)
             break;
         if ((info.protection & VM_PROT_EXECUTE) && size <= kMaxRegion) {
+            rhv::compat::MachHeader header{};
+            if (!copyin((user_addr_t)addr, &header, sizeof(header)) &&
+                header.magic == 0xfeedfacf && header.cpu == 0x01000007 && header.filetype == 2) {
+                mainImage = addr;
+                mainImages++;
+            }
             for (mach_vm_size_t off = 0; off < size; off += kChunk) {
                 size_t want = (size_t)(size - off < kChunk + kMaxPat ? size - off : kChunk + kMaxPat);
                 if (copyin((user_addr_t)(addr + off), buf, want))
@@ -264,6 +274,10 @@ void fixCurrentClient()
 
     IOFree(buf, kChunk + kMaxPat);
     IOFree(srch, sizeof(Search) * nWanted);
+    if (mainImages == 1)
+        installHyperKitCompat(map, mainImage);
+    else
+        RHV_WARN("HyperKit compatibility: expected one main executable, found %u", mainImages);
 }
 
 } // namespace patch

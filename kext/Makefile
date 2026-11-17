@@ -39,6 +39,13 @@ CFLAGS   := $(COMMON) -fno-builtin
 
 all: $(KEXT)
 
+$(OUT)/HyperKitPayload.h: ../compat/HyperKitCompat.c ../compat/HyperKitCompat.h ../scripts/build-hyperkit-payload.py
+	python3 ../scripts/build-hyperkit-payload.py
+
+$(OBJDIR)/HvCompat.o: $(OUT)/HyperKitPayload.h ../include/rhv_client_install.hpp ../include/rhv_client_image.hpp ../compat/HyperKitCompat.h
+$(OBJDIR)/HvPatch.o: ../include/rhv_client_image.hpp Source/HvCompat.hpp
+$(OBJDIR)/HvFrontend.o: Source/HvCompat.hpp
+
 $(OBJDIR)/%.o: Source/%.cpp
 	@mkdir -p $(OBJDIR)
 	xcrun clang++ $(CXXFLAGS) -c $< -o $@

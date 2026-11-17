@@ -12,6 +12,7 @@
 #include "HvFrontend.hpp"
 #include "SVM.hpp"
 #include "HvPatch.hpp"
+#include "HvCompat.hpp"
 #include "HvMsrs.hpp"
 #include "HvSlots.hpp"
 #include "RyzenHV.hpp"
@@ -1434,14 +1435,18 @@ bool setMode(uint32_t m)
             gRegistered = false;
             RHV_SYNC("RyzenHV hv front end: unregistered (Apple's tables are not put back)");
         }
+        rhv::hv::patch::stopCompat();
         return true;
     }
     if (m > 2)
         m = 2;
     if (!gRegistered) {
+        rhv::hv::patch::startCompat();
         RHV_SYNC("RyzenHV hv front end: registering in place of AppleHV");
-        if (!registerTraps())
+        if (!registerTraps()) {
+            rhv::hv::patch::stopCompat();
             return false;
+        }
     }
     gMode = m;
     RHV_INFO("hv front end: registered (mode %u: traps are logged and answered %s), kern.hv_support is untouched", gMode,
